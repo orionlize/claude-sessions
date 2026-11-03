@@ -1,0 +1,116 @@
+{
+  "%1 waiting": {
+    "%1 waiting": "%1 项待处理"
+  },
+  "Needs input": {
+    "Needs input": "等待确认"
+  },
+  "No Claude sessions": {
+    "No Claude sessions": "没有 Claude 会话"
+  },
+  "Waiting": {
+    "Waiting": "等待中"
+  },
+  "Calling tool": {
+    "Calling tool": "调用工具中"
+  },
+  "Error": {
+    "Error": "出错"
+  },
+  "Idle": {
+    "Idle": "空闲"
+  },
+  "Thinking": {
+    "Thinking": "思考中"
+  },
+  "Compacting": {
+    "Compacting": "压缩上下文中"
+  },
+  "Claude is asking": {
+    "Claude is asking": "Claude 提问"
+  },
+  "Allow %1?": {
+    "Allow %1?": "允许 %1？"
+  },
+  "Other…": {
+    "Other…": "其他…"
+  },
+  "Allow": {
+    "Allow": "允许"
+  },
+  "Always allow": {
+    "Always allow": "始终允许"
+  },
+  "Deny": {
+    "Deny": "拒绝"
+  },
+  "Submit": {
+    "Submit": "提交"
+  },
+  "Skip": {
+    "Skip": "跳过"
+  },
+  "Claude Code hooks are installed. Sessions started before installing need a restart.": {
+    "Claude Code hooks are installed. Sessions started before installing need a restart.": "Claude Code hooks 已安装。安装前启动的会话需要重启才生效。"
+  },
+  "Claude Code hooks are not installed. Without them the widget receives nothing.": {
+    "Claude Code hooks are not installed. Without them the widget receives nothing.": "Claude Code hooks 未安装，组件收不到任何数据。"
+  },
+  "Install hooks": {
+    "Install hooks": "安装 hooks"
+  },
+  "Remove hooks": {
+    "Remove hooks": "移除 hooks"
+  },
+  "Pop up for permissions and questions": {
+    "Pop up for permissions and questions": "需要权限或选择时弹窗"
+  },
+  "Off: the widget only changes colour, and you click it to respond.": {
+    "Off: the widget only changes colour, and you click it to respond.": "关闭后组件只变色，点击组件再处理。"
+  },
+  "Show status text on the bar": {
+    "Show status text on the bar": "在状态栏上显示状态文字"
+  },
+  "Add the widget under Settings → Bar Widgets. Enabling this plugin does not add it to a bar.": {
+    "Add the widget under Settings → Bar Widgets. Enabling this plugin does not add it to a bar.": "请在 设置 → 状态栏部件 中手动添加。启用插件不会自动把它放到状态栏上。"
+  },
+  "Switch Claude session": {
+    "Switch Claude session": "切换 Claude 会话"
+  },
+  "No matching sessions": {
+    "No matching sessions": "没有匹配的会话"
+  },
+  "Session switcher": {
+    "Session switcher": "会话切换器"
+  },
+  "Spotlight": {
+    "Spotlight": "Spotlight 搜索"
+  },
+  "Tiles": {
+    "Tiles": "平铺"
+  },
+  "Mod+Tab opens this one. Tiles show each session's latest turns; Spotlight filters by keyword.": {
+    "Mod+Tab opens this one. Tiles show each session's latest turns; Spotlight filters by keyword.": "Mod+Tab 打开所选样式。平铺会显示每个会话最近的对话；Spotlight 按关键字筛选。"
+  },
+  "How can I help you today?": {
+    "How can I help you today?": "今天想做点什么？"
+  },
+  "Enter to start · Shift+Enter for a new line · Tab for folder": {
+    "Enter to start · Shift+Enter for a new line · Tab for folder": "回车启动 · Shift+回车换行 · Tab 选文件夹"
+  },
+  "Enter to choose · Tab to complete · Esc to go back": {
+    "Enter to choose · Tab to complete · Esc to go back": "回车选定 · Tab 补全 · Esc 返回"
+  },
+  "New temporary folder": {
+    "New temporary folder": "新建临时文件夹"
+  },
+  "Search recent folders, or type a path like ~/projects": {
+    "Search recent folders, or type a path like ~/projects": "搜索最近的文件夹，或输入路径，如 ~/projects"
+  },
+  "No such folder": {
+    "No such folder": "没有这个文件夹"
+  },
+  "No matching folders · type a path starting with / or ~": {
+    "No matching folders · type a path starting with / or ~": "没有匹配的文件夹 · 以 / 或 ~ 开头可输入路径"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "claudeSessions",
+  "name": "Claude Sessions",
+  "description": "Live Claude Code session status on DankBar, with permission and question popups.",
+  "version": "0.1.0",
+  "author": "zhangqiang",
+  "icon": "smart_toy",
+  "type": "composite",
+  "capabilities": ["dankbar-widget", "daemon", "monitoring"],
+  "components": {
+    "daemon": "./ClaudeDaemon.qml",
+    "widget": "./ClaudeWidget.qml"
+  },
+  "settings": "./ClaudeSettings.qml",
+  "requires": ["python3"],
+  "dependencies": ["python3"],
+  "requires_dms": ">=1.5.0",
+  "permissions": ["settings_read", "settings_write"]
+}
