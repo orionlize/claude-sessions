@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
 """Previews for the tiled switcher.
 
-Reads [{"id", "pid", "tmux", "pane", "transcript"}] from argv[1] and prints
-{id: {"screen", "items"}}, trying each in turn:
+Reads [{"id", "transcript"}] from argv[1] and prints {id: {"items"}}: the last few
+turns of the transcript, oldest first, as Claude Code lays them out:
+{"kind": "user" | "assistant" | "tool" | "result", "text", ...}, with assistant text
+as markdown, tools as text = name plus "arg", and results with "error".
 
-- `screen`: a snapshot of the session's tmux pane as {"html", "cols", "rows"}.
-- `items`: the last few turns of the transcript, oldest first, as Claude Code lays
-  them out: {"kind": "user" | "assistant" | "tool" | "result", "text", ...}, with
-  assistant text as markdown, tools as text = name plus "arg", and results with "error".
-
-Terminals outside tmux get no screenshot: niri's screenshot-window always posts a
-"Screenshot captured" notification and copies the image to the clipboard.
+Every tile is rendered this way, so no terminal screenshot is taken.
 """
-import html
 import json
 import os
 import re
-import subprocess
 import sys
-
-from focus import tmux_location
 
 TAIL_BYTES = 128 * 1024
 # Screenshots and big tool results bloat the tail; read further back up to this.
@@ -205,128 +197,9 @@ def preview(path):
         size_hint *= 4
 
 
-# xterm's 16 colours; 16-255 are computed.
-BASIC = ["#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
-         "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff"]
-SGR = re.compile(r"\x1b\[([0-9;:]*)m")
-OTHER_ESCAPE = re.compile(r"\x1b(\[[0-9;?]*[A-Za-z]|\][^\x07\x1b]*(\x07|\x1b\\)|[()][A-Za-z0-9])")
-
-
-def color256(n):
-    if n < 16:
-        return BASIC[n]
-    if n >= 232:
-        level = 8 + (n - 232) * 10
-        return "#%02x%02x%02x" % (level, level, level)
-    n -= 16
-    steps = [0, 95, 135, 175, 215, 255]
-    return "#%02x%02x%02x" % (steps[n // 36], steps[n // 6 % 6], steps[n % 6])
-
-
-def apply_sgr(state, params):
-    codes = [int(c) if c.isdigit() else 0 for c in re.split("[;:]", params)] if params else [0]
-    i = 0
-    while i < len(codes):
-        c = codes[i]
-        if c == 0:
-            state.clear()
-        elif c == 1:
-            state["bold"] = True
-        elif c == 3:
-            state["italic"] = True
-        elif c == 4:
-            state["underline"] = True
-        elif c == 7:
-            state["reverse"] = True
-        elif c == 22:
-            state.pop("bold", None)
-        elif c == 23:
-            state.pop("italic", None)
-        elif c == 24:
-            state.pop("underline", None)
-        elif c == 27:
-            state.pop("reverse", None)
-        elif 30 <= c <= 37 or 90 <= c <= 97:
-            state["fg"] = BASIC[c - 30 if c < 90 else c - 90 + 8]
-        elif 40 <= c <= 47 or 100 <= c <= 107:
-            state["bg"] = BASIC[c - 40 if c < 100 else c - 100 + 8]
-        elif c == 39:
-            state.pop("fg", None)
-        elif c == 49:
-            state.pop("bg", None)
-        elif c in (38, 48) and i + 1 < len(codes):
-            key = "fg" if c == 38 else "bg"
-            if codes[i + 1] == 5 and i + 2 < len(codes):
-                state[key] = color256(codes[i + 2] % 256)
-                i += 2
-            elif codes[i + 1] == 2 and i + 4 < len(codes):
-                state[key] = "#%02x%02x%02x" % tuple(min(255, v) for v in codes[i + 2:i + 5])
-                i += 4
-        i += 1
-
-
-def span(text, state):
-    text = html.escape(text, quote=False)
-    if not state:
-        return text
-    fg, bg = state.get("fg"), state.get("bg")
-    if state.get("reverse"):
-        fg, bg = bg or "@BG@", fg or "@FG@"
-    style = []
-    if fg:
-        style.append("color:" + fg)
-    if bg:
-        style.append("background-color:" + bg)
-    if state.get("bold"):
-        style.append("font-weight:bold")
-    if state.get("italic"):
-        style.append("font-style:italic")
-    if state.get("underline"):
-        style.append("text-decoration:underline")
-    return "<span style=\"%s\">%s</span>" % (";".join(style), text) if style else text
-
-
-def ansi_to_html(text):
-    """Terminal text with SGR escapes as Qt rich text, one <br> per line.
-
-    Reversed default colours come out as @FG@ / @BG@ for the caller to fill in.
-    """
-    out, state = [], {}
-    for line in text.split("\n"):
-        pos, parts = 0, []
-        for m in SGR.finditer(line):
-            parts.append(span(OTHER_ESCAPE.sub("", line[pos:m.start()]), state))
-            apply_sgr(state, m.group(1))
-            pos = m.end()
-        parts.append(span(OTHER_ESCAPE.sub("", line[pos:]), state))
-        out.append("".join(parts))
-    return "<br>".join(out)
-
-
-def snapshot(target):
-    location = tmux_location(target)
-    if not location:
-        return None
-    socket, pane = location
-    run = lambda *args: subprocess.run(["tmux", "-S", socket, *args], capture_output=True, text=True,
-                                       timeout=2, check=True).stdout
-    try:
-        cols, rows = run("display-message", "-p", "-t", pane, "#{pane_width}\t#{pane_height}").split()
-        text = run("capture-pane", "-p", "-e", "-t", pane)
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    return {"html": ansi_to_html(text.rstrip("\n")), "cols": int(cols), "rows": int(rows)}
-
-
 def main():
     sessions = json.loads(sys.argv[1])
-    out = {}
-    for s in sessions:
-        screen = snapshot(s)
-        out[s["id"]] = {
-            "screen": screen,
-            "items": [] if screen else preview(s.get("transcript") or ""),
-        }
+    out = {s["id"]: {"items": preview(s.get("transcript") or "")} for s in sessions}
     print(json.dumps(out, ensure_ascii=False))
 
 

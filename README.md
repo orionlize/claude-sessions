@@ -12,7 +12,7 @@ DankMaterialShell 状态栏组件：实时显示 Claude Code 会话状态，在�
 - 点击弹窗里的会话，会切到它所在的 tmux 窗口和 pane，并聚焦对应的 foot 窗口（目前只支持 niri）；该 tmux 会话没有终端连着时，会新开一个 foot 连上去（可用环境变量 `CLAUDE_SESSIONS_TERMINAL` 换成别的终端）
 - `Mod+Tab` 打开会话切换器，在插件设置的「会话切换器」里选样式：
   - **Spotlight**：居中的搜索框，输入关键字筛选项目、标题、提示词和路径，↑↓ / Tab / Ctrl+N/P 选择，回车切换，Esc 关闭
-  - **平铺**：像窗口切换一样把会话铺成网格。会话在 tmux 里时，卡片显示该 pane 的快照（`tmux capture-pane -e`，带颜色，按 pane 尺寸等比缩小），打开期间每 1.5 秒刷新；不在 tmux 里时显示最近几轮对话（读 transcript；不截终端窗口，因为 niri 的截图每次都会弹系统通知并占用剪贴板）。像 Alt+Tab 一样：按住 Mod 时每按一次 Tab 选下一个，松开 Mod 就切过去并隐藏。也可以用方向键 / hjkl / Tab 选择，数字键 1–9 直接切换，回车或空格切换，Esc 只关闭不切换
+  - **平铺**：像窗口切换一样把会话铺成网格。每张卡片都以 markdown 渲染显示最近几轮对话（读 transcript；不截 tmux pane 或终端窗口，因为 niri 的截图每次都会弹系统通知并占用剪贴板），打开期间每 1.5 秒刷新。像 Alt+Tab 一样：按住 Mod 时每按一次 Tab 选下一个，松开 Mod 就切过去并隐藏。也可以用方向键 / hjkl / Tab 选择，数字键 1–9 直接切换，回车或空格切换，Esc 只关闭不切换
   - 不看设置、直接指定样式：`dms ipc call claudeSessions tiles` / `dms ipc call claudeSessions spotlight`
 
 ## 快速启动

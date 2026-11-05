@@ -8,8 +8,7 @@ import qs.Widgets
 import "../lib/Phase.js" as Phase
 
 // Alt-Tab style picker: every session is a tile laid out in a grid centered on the
-// focused screen. A tile shows a snapshot of the session's tmux pane, or its latest
-// turns when it does not run in tmux.
+// focused screen. A tile shows the session's latest turns, rendered as markdown.
 Scope {
     id: root
 
@@ -99,9 +98,6 @@ Scope {
             return;
         reader.command = ["python3", "-S", pluginDir + "/scripts/preview.py", JSON.stringify(sessions.map(s => ({
                     id: s.id,
-                    pid: s.pid || 0,
-                    tmux: s.tmux || "",
-                    pane: s.tmuxPane || "",
                     transcript: s.transcript || ""
                 })))];
         reader.running = true;
@@ -400,8 +396,9 @@ Scope {
         readonly property bool selected: index === root.selectedIndex
         readonly property color statusColor: Phase.color(Theme, modelData.phase)
         readonly property var preview: root.previews[modelData.id] || ({})
-        readonly property var screen: preview.screen || null
         readonly property var items: preview.items || []
+        // DMS defaults to Fira Code; a missing font would fall back to a proportional one.
+        readonly property string monoFamily: Qt.fontFamilies().indexOf(SettingsData.monoFontFamily) >= 0 ? SettingsData.monoFontFamily : "monospace"
 
         width: root.tileWidth
         height: root.tileHeight
@@ -519,7 +516,6 @@ Scope {
             Column {
                 id: lines
 
-                visible: tile.screen === null
                 x: Theme.spacingS
                 width: parent.width - Theme.spacingS * 2
                 y: Math.min(Theme.spacingS, parent.height - height - Theme.spacingS)
@@ -556,7 +552,7 @@ Scope {
                             y: entry.pad
                             text: entry.user ? ">" : entry.kind === "result" ? "⎿" : "⏺"
                             font.pixelSize: Theme.fontSizeSmall
-                            font.family: terminal.family
+                            font.family: tile.monoFamily
                             color: entry.kind === "tool"
                                 ? (entry.modelData.state === "ok" ? Theme.success : entry.modelData.state === "error" ? Theme.error : Theme.surfaceVariantText)
                                 : entry.kind === "assistant" ? Theme.onSurface : Theme.surfaceVariantText
@@ -573,7 +569,7 @@ Scope {
                                 ? "<b>" + root.escapeHtml(entry.modelData.text) + "</b>" + (entry.modelData.arg ? "(" + root.escapeHtml(entry.modelData.arg) + ")" : "")
                                 : entry.modelData.text
                             font.pixelSize: Theme.fontSizeSmall
-                            font.family: entry.kind === "tool" || entry.kind === "result" ? terminal.family : resolvedFontFamily
+                            font.family: entry.kind === "tool" || entry.kind === "result" ? tile.monoFamily : resolvedFontFamily
                             color: entry.kind === "result"
                                 ? (entry.modelData.error ? Theme.error : Theme.surfaceVariantText)
                                 : entry.user ? Theme.surfaceText : Theme.onSurface
@@ -587,47 +583,11 @@ Scope {
                 }
             }
 
-            // The pane as it looks right now, shrunk to fit like a screenshot.
-            Item {
-                id: terminal
-
-                readonly property color background: Qt.tint(tile.color, previewBox.color)
-                // DMS defaults to Fira Code; a missing font would fall back to a proportional one.
-                readonly property string family: Qt.fontFamilies().indexOf(SettingsData.monoFontFamily) >= 0 ? SettingsData.monoFontFamily : "monospace"
-                readonly property real naturalWidth: tile.screen ? tile.screen.cols * cell.advanceWidth("M") : 1
-                // Rich text lines can come out taller than the font metrics say, so trust the layout.
-                readonly property real naturalHeight: tile.screen ? Math.max(tile.screen.rows * cell.lineSpacing, screenText.contentHeight) : 1
-
-                anchors.fill: parent
-                anchors.margins: Theme.spacingXS
-                visible: tile.screen !== null
-
-                FontMetrics {
-                    id: cell
-
-                    font: screenText.font
-                }
-
-                Text {
-                    id: screenText
-
-                    width: terminal.naturalWidth
-                    scale: Math.min(terminal.width / terminal.naturalWidth, terminal.height / terminal.naturalHeight)
-                    transformOrigin: Item.TopLeft
-                    textFormat: Text.RichText
-                    wrapMode: Text.NoWrap
-                    font.family: terminal.family
-                    font.pixelSize: 14
-                    color: Theme.onSurface
-                    text: tile.screen ? "<pre style=\"margin:0;font-family:'" + terminal.family + "'\">" + tile.screen.html.replace(/@FG@/g, Theme.onSurface.toString()).replace(/@BG@/g, terminal.background.toString()) + "</pre>" : ""
-                }
-            }
-
             // Older turns fade out instead of ending on a half-cut line.
             Rectangle {
                 width: parent.width
                 height: Theme.spacingXL
-                visible: lines.visible && lines.y < 0
+                visible: lines.y < 0
                 gradient: Gradient {
                     GradientStop {
                         position: 0
@@ -642,7 +602,7 @@ Scope {
 
             StyledText {
                 anchors.centerIn: parent
-                visible: tile.screen === null && tile.items.length === 0
+                visible: tile.items.length === 0
                 text: tile.modelData.title || tile.modelData.prompt || tile.modelData.cwd || ""
                 width: parent.width - Theme.spacingL * 2
                 horizontalAlignment: Text.AlignHCenter
