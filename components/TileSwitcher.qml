@@ -18,6 +18,18 @@ Scope {
     property int selectedIndex: 0
     property var targetScreen: null
     property var previews: ({})
+    property string previewsRaw: ""
+    // DMS defaults to Fira Code; a missing font would fall back to a proportional one.
+    readonly property string monoFamily: Qt.fontFamilies().indexOf(SettingsData.monoFontFamily) >= 0 ? SettingsData.monoFontFamily : "monospace"
+    // How preview.py draws markdown; a change here re-renders every preview.
+    readonly property string markdownStyle: JSON.stringify({
+        mono: monoFamily,
+        code_bg: css(Theme.withAlpha(Theme.onSurface, 0.08)),
+        border: css(Theme.withAlpha(Theme.outline, 0.5)),
+        link: css(Theme.primary),
+        muted: css(Theme.surfaceVariantText),
+        gap: Theme.spacingXS
+    })
 
     // Tiles have one fixed size, whatever the number of sessions: it is the size
     // that fits a reference grid of refColumns x refRows on screen. Sessions fill
@@ -51,10 +63,13 @@ Scope {
     function open() {
         targetScreen = CompositorService.getFocusedScreen() ?? Quickshell.screens[0] ?? null;
         selectedIndex = 0;
-        previews = {};
         shown = true;
         refresh();
         Qt.callLater(() => keys.forceActiveFocus());
+    }
+
+    function css(c) {
+        return "rgba(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + "," + Math.round(c.b * 255) + "," + c.a.toFixed(3) + ")";
     }
 
     function escapeHtml(text) {
@@ -99,7 +114,7 @@ Scope {
         reader.command = ["python3", "-S", pluginDir + "/scripts/preview.py", JSON.stringify(sessions.map(s => ({
                     id: s.id,
                     transcript: s.transcript || ""
-                })))];
+                }))), markdownStyle];
         reader.running = true;
     }
 
@@ -112,10 +127,12 @@ Scope {
             id: readerOutput
         }
         onExited: exitCode => {
-            if (exitCode !== 0)
+            // Nothing changed: keep every tile as it is laid out.
+            if (exitCode !== 0 || readerOutput.text === root.previewsRaw)
                 return;
             try {
                 root.previews = JSON.parse(readerOutput.text);
+                root.previewsRaw = readerOutput.text;
             } catch (e) {
                 console.warn("claudeSessions: bad preview output:", e);
             }
@@ -395,10 +412,26 @@ Scope {
         required property int index
         readonly property bool selected: index === root.selectedIndex
         readonly property color statusColor: Phase.color(Theme, modelData.phase)
-        readonly property var preview: root.previews[modelData.id] || ({})
-        readonly property var items: preview.items || []
-        // DMS defaults to Fira Code; a missing font would fall back to a proportional one.
-        readonly property string monoFamily: Qt.fontFamilies().indexOf(SettingsData.monoFontFamily) >= 0 ? SettingsData.monoFontFamily : "monospace"
+        // Swapped only when the preview's rev moves, so an unchanged session keeps
+        // its laid-out text instead of the Repeater rebuilding it on every refresh.
+        property var items: []
+        property string rev: ""
+        readonly property string monoFamily: root.monoFamily
+
+        function applyPreview() {
+            const preview = root.previews[modelData.id];
+            if (preview && preview.rev !== rev) {
+                rev = preview.rev;
+                items = preview.items || [];
+            }
+        }
+
+        Connections {
+            target: root
+            function onPreviewsChanged() {
+                tile.applyPreview();
+            }
+        }
 
         width: root.tileWidth
         height: root.tileHeight
@@ -408,7 +441,10 @@ Scope {
         border.color: Theme.primary
         scale: selected ? 1 : 0.98
 
-        Component.onCompleted: win.registerBlurTile(tile)
+        Component.onCompleted: {
+            win.registerBlurTile(tile);
+            applyPreview();
+        }
         Component.onDestruction: win.unregisterBlurTile(tile)
         onScaleChanged: win.refreshBlur()
 
@@ -564,8 +600,11 @@ Scope {
                             x: bullet.x + entry.gutter
                             y: entry.pad
                             width: entry.width - x - entry.pad
-                            textFormat: entry.kind === "assistant" ? Text.MarkdownText : entry.kind === "tool" ? Text.StyledText : Text.PlainText
-                            text: entry.kind === "tool"
+                            // Assistant replies come as rich text from preview.py (scripts/mdhtml.py).
+                            textFormat: entry.kind === "assistant" ? Text.RichText : entry.kind === "tool" ? Text.StyledText : Text.PlainText
+                            text: entry.kind === "assistant"
+                                ? (entry.modelData.html || "")
+                                : entry.kind === "tool"
                                 ? "<b>" + root.escapeHtml(entry.modelData.text) + "</b>" + (entry.modelData.arg ? "(" + root.escapeHtml(entry.modelData.arg) + ")" : "")
                                 : entry.modelData.text
                             font.pixelSize: Theme.fontSizeSmall
@@ -574,9 +613,10 @@ Scope {
                                 ? (entry.modelData.error ? Theme.error : Theme.surfaceVariantText)
                                 : entry.user ? Theme.surfaceText : Theme.onSurface
                             wrapMode: Text.Wrap
-                            // Markdown is already cut to length by preview.py; elide only applies to plain text.
+                            // Rich text is already cut to length by preview.py; elide only applies to plain text.
                             maximumLineCount: entry.kind === "assistant" ? 1000 : entry.user ? 4 : 1
                             elide: entry.kind === "assistant" ? Text.ElideNone : Text.ElideRight
+                            linkColor: Theme.primary
                             onLinkActivated: link => Qt.openUrlExternally(link)
                         }
                     }

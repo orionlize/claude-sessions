@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """Previews for the tiled switcher.
 
-Reads [{"id", "transcript"}] from argv[1] and prints {id: {"items"}}: the last few
-turns of the transcript, oldest first, as Claude Code lays them out:
+Reads [{"id", "transcript"}] from argv[1], and optionally the theme for rendered
+markdown from argv[2] (see mdhtml.DEFAULT_STYLE). Prints {id: {"rev", "items"}}: the
+last few turns of the transcript, oldest first, as Claude Code lays them out:
 {"kind": "user" | "assistant" | "tool" | "result", "text", ...}, with assistant text
-as markdown, tools as text = name plus "arg", and results with "error".
+as rich-text "html", tools as text = name plus "arg", and results with "error".
+`rev` changes only when the transcript (or the theme) does, so the caller can keep
+what it already laid out.
 
 Every tile is rendered this way, so no terminal screenshot is taken.
 """
+import hashlib
 import json
 import os
-import re
 import sys
+
+import mdhtml
 
 TAIL_BYTES = 128 * 1024
 # Screenshots and big tool results bloat the tail; read further back up to this.
@@ -22,6 +27,9 @@ MAX_CHARS = 400
 MAX_LINES = 14
 MAX_MARKDOWN = 1200
 MAX_TABLE_ROWS = 6
+# Bump when the output changes shape, so cached previews are thrown away.
+VERSION = 2
+CACHE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "claude-sessions-previews.json")
 # Prompts Claude Code writes on the user's behalf; not something they typed.
 SYNTHETIC = ("<command-", "<local-command", "<system-reminder", "<bash-", "Caveat:")
 
@@ -43,49 +51,6 @@ def tail_lines(path, size_hint):
 def clip(text):
     text = " ".join(str(text).split())
     return text if len(text) <= MAX_CHARS else text[:MAX_CHARS - 1] + "…"
-
-
-HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$", re.M)
-TABLE_RULE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
-
-
-def open_blocks(lines):
-    """Qt's markdown, unlike GitHub's, will not let a table interrupt a paragraph:
-    put a blank line before each table header that follows text."""
-    out = []
-    for i, line in enumerate(lines):
-        header = "|" in line and i + 1 < len(lines) and TABLE_RULE.match(lines[i + 1]) and "-" in lines[i + 1]
-        if header and out and out[-1].strip() and "|" not in out[-1]:
-            out.append("")
-        out.append(line)
-    return out
-
-
-def clip_markdown(text):
-    """Keep the line breaks markdown needs, but only the first MAX_LINES lines.
-
-    Headings become bold lines, as Claude Code prints them, instead of big type.
-    """
-    # The blank line keeps a table or list right under a heading from joining its paragraph.
-    lines = open_blocks(HEADING.sub(r"**\1**\n", text.strip()).split("\n"))
-    out, size, count = [], 0, 0
-    for i, line in enumerate(lines):
-        # Blank lines are free; a table cut at its header keeps a few rows.
-        in_table = "|" in line and ((out and "|" in out[-1]) or
-                                    (i + 1 < len(lines) and TABLE_RULE.match(lines[i + 1]) and "-" in lines[i + 1]))
-        if line.strip() and count >= MAX_LINES and not (in_table and count < MAX_LINES + MAX_TABLE_ROWS):
-            out += ["", "…"]
-            break
-        if size + len(line) > MAX_MARKDOWN:
-            out.append(line[:max(0, MAX_MARKDOWN - size)] + "…")
-            break
-        out.append(line)
-        size += len(line) + 1
-        count += 1 if line.strip() else 0
-    # An unclosed code fence would swallow everything after it.
-    if sum(1 for line in out if line.lstrip().startswith("```")) % 2:
-        out.append("```")
-    return "\n".join(out)
 
 
 def short_path(path, cwd):
@@ -139,7 +104,7 @@ def result_text(block):
     return first + (f" … +{len(lines) - 1} lines" if len(lines) > 1 else "")
 
 
-def items_of(entry):
+def items_of(entry, style=None):
     """Items in Claude Code's terms: `user` prompts, `assistant` markdown, `tool` calls
     with `arg` and a `state` of running / ok / error, and each call's `result`."""
     kind = entry.get("type")
@@ -165,7 +130,7 @@ def items_of(entry):
                 text = "\n".join(clip(line) for line in lines[:4]) + ("\n…" if len(lines) > 4 else "")
                 out.append({"kind": "user", "text": text})
             else:
-                out.append({"kind": "assistant", "text": clip_markdown(text)})
+                out.append({"kind": "assistant", "html": mdhtml.to_html(text, MAX_LINES, MAX_MARKDOWN, MAX_TABLE_ROWS, style)})
         elif block.get("type") == "tool_use":
             name, arg = tool_call(block, cwd)
             out.append({"kind": "tool", "text": name, "arg": arg, "id": block.get("id"), "state": "running"})
@@ -175,7 +140,7 @@ def items_of(entry):
     return out
 
 
-def preview(path):
+def preview(path, style=None):
     size_hint = TAIL_BYTES
     while True:
         lines, whole = tail_lines(path, size_hint)
@@ -186,7 +151,7 @@ def preview(path):
             except ValueError:
                 continue
             if isinstance(entry, dict):
-                items.extend(items_of(entry))
+                items.extend(items_of(entry, style))
         if len(items) >= MAX_ITEMS or whole or size_hint >= MAX_BYTES:
             # A call's bullet shows how it went, like Claude Code's green / red dot.
             calls = {i["id"]: i for i in items if i["kind"] == "tool" and i.get("id")}
@@ -197,9 +162,53 @@ def preview(path):
         size_hint *= 4
 
 
+def revision(path, style_key):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "missing:" + style_key
+    return "%d:%d:%s" % (st.st_mtime_ns, st.st_size, style_key)
+
+
+def load_cache():
+    try:
+        with open(CACHE, encoding="utf-8") as f:
+            cache = json.load(f)
+        return cache if isinstance(cache, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_cache(cache):
+    tmp = CACHE + ".%d" % os.getpid()
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+        os.replace(tmp, CACHE)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 def main():
     sessions = json.loads(sys.argv[1])
-    out = {s["id"]: {"items": preview(s.get("transcript") or "")} for s in sessions}
+    style = json.loads(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else {}
+    style_key = hashlib.sha1(json.dumps([VERSION, style], sort_keys=True).encode()).hexdigest()[:12]
+    # Unchanged transcripts are not read again: a preview is kept per transcript
+    # path, keyed on its mtime, size and the theme.
+    cache, fresh, out = load_cache(), {}, {}
+    for s in sessions:
+        path = s.get("transcript") or ""
+        rev = revision(path, style_key)
+        hit = cache.get(path)
+        if not (isinstance(hit, dict) and hit.get("rev") == rev and isinstance(hit.get("items"), list)):
+            hit = {"rev": rev, "items": preview(path, style)}
+        fresh[path] = hit
+        out[s["id"]] = hit
+    if fresh != cache:
+        save_cache(fresh)
     print(json.dumps(out, ensure_ascii=False))
 
 
