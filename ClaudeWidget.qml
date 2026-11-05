@@ -57,7 +57,7 @@ PluginComponent {
         return status === "idle" ? 0.55 : 1;
     }
 
-    readonly property color accent: anyWaiting ? Theme.warning : phaseColor(primaryPhase)
+    readonly property color accent: anyWaiting ? Theme.warning : primaryPhase === "tool" || primaryPhase === "error" ? phaseColor(primaryPhase) : Theme.primary
     readonly property string labelText: {
         if (requests.length > 0)
             return requests.length > 1 ? tr("%1 waiting").arg(requests.length) : tr("Needs input");
@@ -203,6 +203,7 @@ PluginComponent {
                 font.pixelSize: root.textSize
                 color: Theme.widgetTextColor
                 elide: Text.ElideRight
+                wrapMode: Text.NoWrap
                 width: Math.min(implicitWidth, 220)
             }
         }

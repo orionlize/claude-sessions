@@ -278,11 +278,12 @@ Scope {
 
                             StyledText {
                                 width: parent.width
-                                text: row.modelData.project
+                                text: Phase.name(row.modelData)
                                 font.pixelSize: Theme.fontSizeLarge
                                 font.weight: Theme.fontWeightMedium
                                 color: row.contentColor
                                 elide: Text.ElideRight
+                                wrapMode: Text.NoWrap
                             }
 
                             StyledText {
@@ -292,7 +293,7 @@ Scope {
                                 font.pixelSize: Theme.fontSizeSmall
                                 color: row.selected ? Theme.withAlpha(Theme.onSelectedContainer, 0.75) : Theme.surfaceVariantText
                                 elide: Text.ElideRight
-                                maximumLineCount: 1
+                                wrapMode: Text.NoWrap
                             }
                         }
 

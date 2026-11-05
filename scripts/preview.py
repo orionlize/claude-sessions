@@ -2,14 +2,15 @@
 """Previews for the tiled switcher.
 
 Reads [{"id", "pid", "tmux", "pane", "transcript"}] from argv[1] and prints
-{id: {"screen", "shot", "items"}}, trying each in turn:
+{id: {"screen", "items"}}, trying each in turn:
 
 - `screen`: a snapshot of the session's tmux pane as {"html", "cols", "rows"}.
-- `shot`: outside tmux, the path of a screenshot of its terminal window. Only taken
-  when argv[2] is "shots", because niri also puts every screenshot on the
-  clipboard: the clipboard is put back afterwards through DMS's clipboard history.
-- `items`: the last few turns of the transcript as [{"kind", "text"}], kind being
-  "user", "assistant" or "tool", oldest first.
+- `items`: the last few turns of the transcript, oldest first, as Claude Code lays
+  them out: {"kind": "user" | "assistant" | "tool" | "result", "text", ...}, with
+  assistant text as markdown, tools as text = name plus "arg", and results with "error".
+
+Terminals outside tmux get no screenshot: niri's screenshot-window always posts a
+"Screenshot captured" notification and copies the image to the clipboard.
 """
 import html
 import json
@@ -17,17 +18,18 @@ import os
 import re
 import subprocess
 import sys
-import time
 
-from focus import ancestors, find_window, tmux_location
-
-SHOT_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "claude-sessions-shots")
+from focus import tmux_location
 
 TAIL_BYTES = 128 * 1024
 # Screenshots and big tool results bloat the tail; read further back up to this.
 MAX_BYTES = 8 * 1024 * 1024
-MAX_ITEMS = 14
+MAX_ITEMS = 24
 MAX_CHARS = 400
+# Assistant replies keep their markdown up to this many lines / characters.
+MAX_LINES = 14
+MAX_MARKDOWN = 1200
+MAX_TABLE_ROWS = 6
 # Prompts Claude Code writes on the user's behalf; not something they typed.
 SYNTHETIC = ("<command-", "<local-command", "<system-reminder", "<bash-", "Caveat:")
 
@@ -51,17 +53,103 @@ def clip(text):
     return text if len(text) <= MAX_CHARS else text[:MAX_CHARS - 1] + "…"
 
 
-def tool_summary(block):
-    name = block.get("name", "tool")
-    args = block.get("input") or {}
-    for key in ("description", "command", "file_path", "pattern", "url", "query", "prompt", "path"):
-        value = args.get(key) if isinstance(args, dict) else None
-        if value:
-            return f"{name}: {value}"
-    return name
+HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$", re.M)
+TABLE_RULE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
+
+
+def open_blocks(lines):
+    """Qt's markdown, unlike GitHub's, will not let a table interrupt a paragraph:
+    put a blank line before each table header that follows text."""
+    out = []
+    for i, line in enumerate(lines):
+        header = "|" in line and i + 1 < len(lines) and TABLE_RULE.match(lines[i + 1]) and "-" in lines[i + 1]
+        if header and out and out[-1].strip() and "|" not in out[-1]:
+            out.append("")
+        out.append(line)
+    return out
+
+
+def clip_markdown(text):
+    """Keep the line breaks markdown needs, but only the first MAX_LINES lines.
+
+    Headings become bold lines, as Claude Code prints them, instead of big type.
+    """
+    # The blank line keeps a table or list right under a heading from joining its paragraph.
+    lines = open_blocks(HEADING.sub(r"**\1**\n", text.strip()).split("\n"))
+    out, size, count = [], 0, 0
+    for i, line in enumerate(lines):
+        # Blank lines are free; a table cut at its header keeps a few rows.
+        in_table = "|" in line and ((out and "|" in out[-1]) or
+                                    (i + 1 < len(lines) and TABLE_RULE.match(lines[i + 1]) and "-" in lines[i + 1]))
+        if line.strip() and count >= MAX_LINES and not (in_table and count < MAX_LINES + MAX_TABLE_ROWS):
+            out += ["", "…"]
+            break
+        if size + len(line) > MAX_MARKDOWN:
+            out.append(line[:max(0, MAX_MARKDOWN - size)] + "…")
+            break
+        out.append(line)
+        size += len(line) + 1
+        count += 1 if line.strip() else 0
+    # An unclosed code fence would swallow everything after it.
+    if sum(1 for line in out if line.lstrip().startswith("```")) % 2:
+        out.append("```")
+    return "\n".join(out)
+
+
+def short_path(path, cwd):
+    if cwd and path.startswith(cwd.rstrip("/") + "/"):
+        return path[len(cwd.rstrip("/")) + 1:]
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path.startswith(home + "/") else path
+
+
+# The argument Claude Code shows in Tool(argument), per tool.
+TOOL_ARG = {
+    "Bash": "command", "Read": "file_path", "Write": "file_path", "Edit": "file_path",
+    "MultiEdit": "file_path", "NotebookEdit": "notebook_path", "Grep": "pattern", "Glob": "pattern",
+    "WebFetch": "url", "WebSearch": "query", "Agent": "description", "Task": "description",
+    "Skill": "skill",
+}
+TOOL_LABEL = {"Grep": "Search", "TodoWrite": "Update Todos"}
+
+
+def tool_call(block, cwd):
+    """(name, argument) as Claude Code prints a tool call: `Name(argument)`."""
+    name = block.get("name") or "tool"
+    args = block.get("input") if isinstance(block.get("input"), dict) else {}
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        label = " - ".join(parts[1:3]) + " (MCP)"
+    else:
+        label = TOOL_LABEL.get(name, name)
+    key = TOOL_ARG.get(name)
+    value = args.get(key) if key else None
+    if not value:
+        value = next((args[k] for k in ("description", "command", "file_path", "pattern", "url",
+                                        "query", "prompt", "path") if args.get(k)), "")
+    value = str(value)
+    if key in ("file_path", "notebook_path"):
+        value = short_path(value, cwd)
+    elif key == "pattern" and name == "Grep":
+        value = f'pattern: "{value}"'
+    value = value.strip().split("\n")[0]
+    return clip(label), clip(value) if value else ""
+
+
+def result_text(block):
+    content = block.get("content")
+    if isinstance(content, list):
+        content = "\n".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
+    lines = [line for line in str(content or "").split("\n") if line.strip()]
+    if not lines:
+        return "(No content)"
+    first = clip(lines[0])
+    return first + (f" … +{len(lines) - 1} lines" if len(lines) > 1 else "")
 
 
 def items_of(entry):
+    """Items in Claude Code's terms: `user` prompts, `assistant` markdown, `tool` calls
+    with `arg` and a `state` of running / ok / error, and each call's `result`."""
     kind = entry.get("type")
     message = entry.get("message")
     if kind not in ("user", "assistant") or not isinstance(message, dict) or entry.get("isMeta"):
@@ -71,6 +159,7 @@ def items_of(entry):
         content = [{"type": "text", "text": content}]
     if not isinstance(content, list):
         return []
+    cwd = entry.get("cwd") or ""
     out = []
     for block in content:
         if not isinstance(block, dict):
@@ -79,9 +168,18 @@ def items_of(entry):
             text = block.get("text", "").strip()
             if not text or (kind == "user" and text.startswith(SYNTHETIC)):
                 continue
-            out.append({"kind": kind, "text": clip(text)})
+            if kind == "user":
+                lines = text.split("\n")
+                text = "\n".join(clip(line) for line in lines[:4]) + ("\n…" if len(lines) > 4 else "")
+                out.append({"kind": "user", "text": text})
+            else:
+                out.append({"kind": "assistant", "text": clip_markdown(text)})
         elif block.get("type") == "tool_use":
-            out.append({"kind": "tool", "text": clip(tool_summary(block))})
+            name, arg = tool_call(block, cwd)
+            out.append({"kind": "tool", "text": name, "arg": arg, "id": block.get("id"), "state": "running"})
+        elif block.get("type") == "tool_result":
+            out.append({"kind": "result", "text": result_text(block), "error": bool(block.get("is_error")),
+                        "for": block.get("tool_use_id")})
     return out
 
 
@@ -98,6 +196,11 @@ def preview(path):
             if isinstance(entry, dict):
                 items.extend(items_of(entry))
         if len(items) >= MAX_ITEMS or whole or size_hint >= MAX_BYTES:
+            # A call's bullet shows how it went, like Claude Code's green / red dot.
+            calls = {i["id"]: i for i in items if i["kind"] == "tool" and i.get("id")}
+            for item in items:
+                if item["kind"] == "result" and item.get("for") in calls:
+                    calls[item["for"]]["state"] = "error" if item["error"] else "ok"
             return items[-MAX_ITEMS:]
         size_hint *= 4
 
@@ -215,92 +318,14 @@ def snapshot(target):
     return {"html": ansi_to_html(text.rstrip("\n")), "cols": int(cols), "rows": int(rows)}
 
 
-def run(*args, timeout=3):
-    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=True).stdout
-
-
-def clipboard_history():
-    try:
-        return json.loads(run("dms", "clipboard", "history", "--json")) or []
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return []
-
-
-def restore_clipboard(before, taken):
-    """Drop the screenshots niri added to the clipboard history and re-copy what was there.
-
-    The clipboard manager records entries asynchronously, so wait for them briefly.
-    """
-    newest = max((e.get("id", 0) for e in before), default=0)
-    added = []
-    deadline = time.monotonic() + 1.5
-    while time.monotonic() < deadline:
-        added = [e for e in clipboard_history() if e.get("id", 0) > newest and e.get("isImage")]
-        if len(added) >= taken:
-            break
-        time.sleep(0.1)
-    for entry in added:
-        try:
-            run("dms", "clipboard", "delete", str(entry["id"]))
-        except (OSError, subprocess.SubprocessError):
-            pass
-    if newest:
-        try:
-            run("dms", "clipboard", "get", str(newest), "--copy")
-        except (OSError, subprocess.SubprocessError):
-            pass
-
-
-def screenshots(targets):
-    """{session id: png path} for sessions whose terminal window was found."""
-    if not targets:
-        return {}
-    try:
-        windows = json.loads(run("niri", "msg", "--json", "windows"))
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return {}
-    os.makedirs(SHOT_DIR, exist_ok=True)
-    for name in os.listdir(SHOT_DIR):
-        try:
-            os.remove(os.path.join(SHOT_DIR, name))
-        except OSError:
-            pass
-    before = clipboard_history()
-    shots, stamp = {}, int(time.time() * 1000)
-    for target in targets:
-        pid = target.get("pid")
-        window = find_window(windows, ancestors(pid)) if isinstance(pid, int) and pid > 0 else None
-        if not window:
-            continue
-        # A fresh name per capture, so the image cache never serves an old one.
-        path = os.path.join(SHOT_DIR, f"{window['id']}-{stamp}.png")
-        try:
-            run("niri", "msg", "action", "screenshot-window", "--id", str(window["id"]),
-                "--write-to-disk", "true", "--path", path)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        shots[target["id"]] = path
-    if shots:
-        restore_clipboard(before, len(shots))
-    # niri writes the file shortly after the action returns.
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline and not all(os.path.exists(p) for p in shots.values()):
-        time.sleep(0.05)
-    return {k: p for k, p in shots.items() if os.path.exists(p)}
-
-
 def main():
     sessions = json.loads(sys.argv[1])
-    take_shots = len(sys.argv) > 2 and sys.argv[2] == "shots"
-    screens = {s["id"]: snapshot(s) for s in sessions}
-    shots = screenshots([s for s in sessions if not screens[s["id"]]]) if take_shots else {}
     out = {}
     for s in sessions:
-        screen, shot = screens[s["id"]], shots.get(s["id"])
+        screen = snapshot(s)
         out[s["id"]] = {
             "screen": screen,
-            "shot": shot,
-            "items": [] if screen or shot else preview(s.get("transcript") or ""),
+            "items": [] if screen else preview(s.get("transcript") or ""),
         }
     print(json.dumps(out, ensure_ascii=False))
 

@@ -95,8 +95,8 @@
   "How can I help you today?": {
     "How can I help you today?": "今天想做点什么？"
   },
-  "Enter to start · Shift+Enter for a new line · Tab for folder": {
-    "Enter to start · Shift+Enter for a new line · Tab for folder": "回车启动 · Shift+回车换行 · Tab 选文件夹"
+  "↑↓ to move · Enter to choose · Esc to go back": {
+    "↑↓ to move · Enter to choose · Esc to go back": "↑↓ 移动 · 回车选定 · Esc 返回"
   },
   "Enter to choose · Tab to complete · Esc to go back": {
     "Enter to choose · Tab to complete · Esc to go back": "回车选定 · Tab 补全 · Esc 返回"
@@ -112,5 +112,14 @@
   },
   "No matching folders · type a path starting with / or ~": {
     "No matching folders · type a path starting with / or ~": "没有匹配的文件夹 · 以 / 或 ~ 开头可输入路径"
+  },
+  "Enter to start · Tab for folder · Ctrl+M model · Ctrl+E effort": {
+    "Enter to start · Tab for folder · Ctrl+M model · Ctrl+E effort": "回车启动 · Tab 选文件夹 · Ctrl+M 模型 · Ctrl+E 思考强度"
+  },
+  "Extra quick-launch models": {
+    "Extra quick-launch models": "快速启动的额外模型"
+  },
+  "Besides default, fable, opus, sonnet and haiku. Separate with commas, e.g. claude-opus-5-5, opusplan": {
+    "Besides default, fable, opus, sonnet and haiku. Separate with commas, e.g. claude-opus-5-5, opusplan": "除 default、fable、opus、sonnet、haiku 之外的模型，用逗号分隔，如 claude-opus-5-5, opusplan"
   }
 }

@@ -74,6 +74,14 @@ PluginSettings {
         defaultValue: "spotlight"
     }
 
+    StringSetting {
+        settingKey: "extraModels"
+        label: root.tr("Extra quick-launch models")
+        description: root.tr("Besides default, fable, opus, sonnet and haiku. Separate with commas, e.g. claude-opus-5-5, opusplan")
+        placeholder: "claude-opus-5-5, opusplan"
+        defaultValue: ""
+    }
+
     ToggleSetting {
         settingKey: "autoPopup"
         label: root.tr("Pop up for permissions and questions")
