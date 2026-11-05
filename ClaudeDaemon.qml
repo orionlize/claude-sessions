@@ -5,6 +5,7 @@ import qs.Common
 import qs.Services
 import "./lib/SessionModel.js" as Model
 import "./lib/Folders.js" as Folders
+import "./lib/LaunchOptions.js" as LaunchOptions
 import "./components"
 
 // Owns all state. It runs once per shell, whereas the bar widget has one instance
@@ -21,6 +22,11 @@ Item {
     property var launchedFolders: []
     property string lastFolder: ""
     property string pendingFolder: ""
+    // Model and effort last used from quick launch.
+    property string lastModel: LaunchOptions.DEFAULT_MODEL
+    property string lastEffort: LaunchOptions.DEFAULT_EFFORT
+    property var pendingOptions: null
+    readonly property var modelOptions: LaunchOptions.models(SettingsData.getPluginSettingsForPlugin(pluginId)?.extraModels)
 
     readonly property string socketPath: {
         const runtime = Quickshell.env("XDG_RUNTIME_DIR");
@@ -48,6 +54,8 @@ Item {
         model = Model.restore(pluginService.loadPluginState(pluginId, "sessions", {}));
         launchedFolders = pluginService.loadPluginState(pluginId, "launchedFolders", []) || [];
         lastFolder = pluginService.loadPluginState(pluginId, "lastFolder", "") || "";
+        lastModel = pluginService.loadPluginState(pluginId, "lastModel", "") || LaunchOptions.DEFAULT_MODEL;
+        lastEffort = LaunchOptions.pick(LaunchOptions.EFFORTS, pluginService.loadPluginState(pluginId, "lastEffort", ""), LaunchOptions.DEFAULT_EFFORT);
         publish();
         sweep();
     }
@@ -115,13 +123,19 @@ Item {
     }
 
     // An empty folder starts the session in its own new /tmp/<uuid> directory.
-    function launch(prompt, folder) {
+    function launch(prompt, folder, model, effort) {
         if (!pluginDir() || launchProcess.running)
             return;
         pendingFolder = folder;
+        pendingOptions = {
+            model: model,
+            effort: effort
+        };
         launchProcess.command = ["python3", "-S", pluginDir() + "/scripts/launch.py", JSON.stringify({
                 cwd: folder,
-                prompt: prompt
+                prompt: prompt,
+                model: model,
+                effort: effort
             })];
         launchProcess.running = true;
     }
@@ -136,10 +150,24 @@ Item {
         pluginService.savePluginState(pluginId, "launchedFolders", launchedFolders);
     }
 
+    function rememberOptions(options) {
+        if (!options)
+            return;
+        lastModel = options.model;
+        lastEffort = options.effort;
+        if (!pluginService || !pluginId)
+            return;
+        pluginService.savePluginState(pluginId, "lastModel", lastModel);
+        pluginService.savePluginState(pluginId, "lastEffort", lastEffort);
+    }
+
     function toggleLaunch(): string {
         closeSwitchers();
-        if (!quickLaunch.shown)
+        if (!quickLaunch.shown) {
             quickLaunch.folder = lastFolder;
+            quickLaunch.model = LaunchOptions.pick(modelOptions, lastModel, LaunchOptions.DEFAULT_MODEL);
+            quickLaunch.effort = lastEffort;
+        }
         quickLaunch.toggle();
         return quickLaunch.shown ? "opened" : "closed";
     }
@@ -150,7 +178,9 @@ Item {
         const targets = Object.values(model.sessions).map(s => ({
             id: s.id,
             pid: s.pid,
-            transcript: s.transcript
+            transcript: s.transcript,
+            tmux: s.tmux || "",
+            pane: s.tmuxPane || ""
         }));
         sweepProcess.command = ["python3", "-S", pluginDir() + "/scripts/sweep.py", JSON.stringify(targets)];
         sweepRunning = true;
@@ -200,15 +230,18 @@ Item {
 
         pluginDir: root.pluginDir()
         recentFolders: Folders.recentFolders(root.launchedFolders, Model.sessionList(root.model))
-        onSubmitted: (prompt, folder) => root.launch(prompt, folder)
+        modelOptions: root.modelOptions
+        onSubmitted: (prompt, folder, model, effort) => root.launch(prompt, folder, model, effort)
     }
 
     Process {
         id: launchProcess
 
         onExited: exitCode => {
-            if (exitCode === 0)
+            if (exitCode === 0) {
                 root.rememberFolder(root.pendingFolder);
+                root.rememberOptions(root.pendingOptions);
+            }
         }
 
         stderr: StdioCollector {
@@ -258,7 +291,7 @@ Item {
             return "opened";
         }
 
-        // Quick entry box that starts a new session in a new terminal.
+        // Quick entry box that starts a new session as a window in the claude-quick tmux session.
         function launch(): string {
             return root.toggleLaunch();
         }

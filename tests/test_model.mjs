@@ -70,6 +70,14 @@ test("sweep honours only interrupts newer than the last event", () => {
     assert.equal(status(M.applySweep(state, { alive: { s: true }, interrupted: { s: 5 } }).state), "idle");
 });
 
+test("sweep keeps the terminal title and clears it when gone", () => {
+    const { state } = run(ev("UserPromptSubmit"));
+    const titled = M.applySweep(state, { alive: { s: true }, interrupted: {}, titles: { s: "fix bar" } }).state;
+    assert.equal(titled.sessions.s.termTitle, "fix bar");
+    assert.equal(M.applySweep(titled, { alive: { s: true }, interrupted: {} }).state.sessions.s.termTitle, "fix bar");
+    assert.equal(M.applySweep(titled, { alive: { s: true }, interrupted: {}, titles: {} }).state.sessions.s.termTitle, "");
+});
+
 test("interrupted permission prompt is released", () => {
     const { state } = run(perm("a"));
     const r = M.applySweep(state, { alive: { s: true }, interrupted: { s: 5 } });

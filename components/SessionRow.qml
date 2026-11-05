@@ -61,10 +61,11 @@ Rectangle {
                     id: projectName
 
                     width: parent.width - statusLabel.implicitWidth - Theme.spacingS
-                    text: root.modelData.project
+                    text: Phase.name(root.modelData)
                     font.weight: Theme.fontWeightMedium
                     color: Theme.surfaceText
                     elide: Text.ElideRight
+                    wrapMode: Text.NoWrap
                 }
 
                 StyledText {
@@ -84,7 +85,7 @@ Rectangle {
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
                 elide: Text.ElideRight
-                maximumLineCount: 1
+                wrapMode: Text.NoWrap
             }
         }
     }

@@ -110,6 +110,7 @@ Rectangle {
                 font.weight: Theme.fontWeightMedium
                 color: Theme.surfaceText
                 elide: Text.ElideRight
+                wrapMode: Text.NoWrap
             }
 
             StyledText {

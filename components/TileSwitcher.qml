@@ -19,9 +19,6 @@ Scope {
     property int selectedIndex: 0
     property var targetScreen: null
     property var previews: ({})
-    // Terminal screenshots outside tmux are taken once per opening: each one also
-    // goes through the clipboard.
-    property bool wantShots: false
 
     // Tiles have one fixed size, whatever the number of sessions: it is the size
     // that fits a reference grid of refColumns x refRows on screen. Sessions fill
@@ -56,10 +53,13 @@ Scope {
         targetScreen = CompositorService.getFocusedScreen() ?? Quickshell.screens[0] ?? null;
         selectedIndex = 0;
         previews = {};
-        wantShots = true;
         shown = true;
         refresh();
         Qt.callLater(() => keys.forceActiveFocus());
+    }
+
+    function escapeHtml(text) {
+        return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
     function close() {
@@ -103,8 +103,7 @@ Scope {
                     tmux: s.tmux || "",
                     pane: s.tmuxPane || "",
                     transcript: s.transcript || ""
-                }))), wantShots ? "shots" : "live"];
-        wantShots = false;
+                })))];
         reader.running = true;
     }
 
@@ -120,16 +119,7 @@ Scope {
             if (exitCode !== 0)
                 return;
             try {
-                const next = JSON.parse(readerOutput.text);
-                // Later refreshes only update tmux snapshots and transcripts; keep the screenshot.
-                for (const id in next) {
-                    const old = root.previews[id];
-                    if (!next[id].screen && !next[id].shot && old?.shot) {
-                        next[id].shot = old.shot;
-                        next[id].items = [];
-                    }
-                }
-                root.previews = next;
+                root.previews = JSON.parse(readerOutput.text);
             } catch (e) {
                 console.warn("claudeSessions: bad preview output:", e);
             }
@@ -411,7 +401,6 @@ Scope {
         readonly property color statusColor: Phase.color(Theme, modelData.phase)
         readonly property var preview: root.previews[modelData.id] || ({})
         readonly property var screen: preview.screen || null
-        readonly property string shot: preview.shot || ""
         readonly property var items: preview.items || []
 
         width: root.tileWidth
@@ -485,11 +474,12 @@ Scope {
 
                 StyledText {
                     width: parent.width
-                    text: tile.modelData.project
+                    text: Phase.name(tile.modelData)
                     font.pixelSize: Theme.fontSizeLarge
                     font.weight: Theme.fontWeightMedium
                     color: tile.selected ? Theme.onSelectedContainer : Theme.onSurface
                     elide: Text.ElideRight
+                    wrapMode: Text.NoWrap
                 }
 
                 StyledText {
@@ -498,6 +488,7 @@ Scope {
                     font.pixelSize: Theme.fontSizeSmall
                     color: tile.statusColor
                     elide: Text.ElideRight
+                    wrapMode: Text.NoWrap
                 }
             }
 
@@ -528,7 +519,7 @@ Scope {
             Column {
                 id: lines
 
-                visible: tile.screen === null && !tile.shot
+                visible: tile.screen === null
                 x: Theme.spacingS
                 width: parent.width - Theme.spacingS * 2
                 y: Math.min(Theme.spacingS, parent.height - height - Theme.spacingS)
@@ -537,34 +528,63 @@ Scope {
                 Repeater {
                     model: tile.items
 
-                    StyledText {
+                    // One transcript item laid out like Claude Code prints it: a bullet in
+                    // the gutter, then the text; prompts sit on a tinted band.
+                    Item {
+                        id: entry
+
                         required property var modelData
+                        readonly property string kind: modelData.kind
+                        readonly property bool user: kind === "user"
+                        readonly property real pad: user ? Theme.spacingXS : 0
+                        readonly property real gutter: Math.round(Theme.fontSizeSmall * 1.5)
 
                         width: lines.width
-                        text: (modelData.kind === "user" ? "› " : modelData.kind === "tool" ? "⏺ " : "") + modelData.text
-                        font.pixelSize: Theme.fontSizeSmall
-                        font.family: modelData.kind === "tool" ? SettingsData.monoFontFamily : resolvedFontFamily
-                        font.weight: modelData.kind === "user" ? Theme.fontWeightMedium : Font.Normal
-                        color: modelData.kind === "user" ? Theme.primary : modelData.kind === "tool" ? Theme.surfaceVariantText : Theme.onSurface
-                        wrapMode: Text.Wrap
-                        maximumLineCount: modelData.kind === "tool" ? 1 : 4
-                        elide: Text.ElideRight
+                        height: body.height + pad * 2
+
+                        Rectangle {
+                            anchors.fill: parent
+                            visible: entry.user
+                            radius: Theme.cornerRadiusS
+                            color: Theme.withAlpha(Theme.surfaceVariantText, 0.14)
+                        }
+
+                        StyledText {
+                            id: bullet
+
+                            x: entry.pad + (entry.kind === "result" ? entry.gutter * 0.6 : 0)
+                            y: entry.pad
+                            text: entry.user ? ">" : entry.kind === "result" ? "⎿" : "⏺"
+                            font.pixelSize: Theme.fontSizeSmall
+                            font.family: terminal.family
+                            color: entry.kind === "tool"
+                                ? (entry.modelData.state === "ok" ? Theme.success : entry.modelData.state === "error" ? Theme.error : Theme.surfaceVariantText)
+                                : entry.kind === "assistant" ? Theme.onSurface : Theme.surfaceVariantText
+                        }
+
+                        StyledText {
+                            id: body
+
+                            x: bullet.x + entry.gutter
+                            y: entry.pad
+                            width: entry.width - x - entry.pad
+                            textFormat: entry.kind === "assistant" ? Text.MarkdownText : entry.kind === "tool" ? Text.StyledText : Text.PlainText
+                            text: entry.kind === "tool"
+                                ? "<b>" + root.escapeHtml(entry.modelData.text) + "</b>" + (entry.modelData.arg ? "(" + root.escapeHtml(entry.modelData.arg) + ")" : "")
+                                : entry.modelData.text
+                            font.pixelSize: Theme.fontSizeSmall
+                            font.family: entry.kind === "tool" || entry.kind === "result" ? terminal.family : resolvedFontFamily
+                            color: entry.kind === "result"
+                                ? (entry.modelData.error ? Theme.error : Theme.surfaceVariantText)
+                                : entry.user ? Theme.surfaceText : Theme.onSurface
+                            wrapMode: Text.Wrap
+                            // Markdown is already cut to length by preview.py; elide only applies to plain text.
+                            maximumLineCount: entry.kind === "assistant" ? 1000 : entry.user ? 4 : 1
+                            elide: entry.kind === "assistant" ? Text.ElideNone : Text.ElideRight
+                            onLinkActivated: link => Qt.openUrlExternally(link)
+                        }
                     }
                 }
-            }
-
-            // Outside tmux: a screenshot of the terminal window taken when the switcher opened.
-            Image {
-                anchors.fill: parent
-                anchors.margins: Theme.spacingXS
-                visible: tile.shot !== "" && tile.screen === null
-                source: tile.shot ? "file://" + tile.shot : ""
-                fillMode: Image.PreserveAspectFit
-                verticalAlignment: Image.AlignTop
-                asynchronous: true
-                cache: false
-                smooth: true
-                mipmap: true
             }
 
             // The pane as it looks right now, shrunk to fit like a screenshot.
@@ -622,7 +642,7 @@ Scope {
 
             StyledText {
                 anchors.centerIn: parent
-                visible: tile.screen === null && !tile.shot && tile.items.length === 0
+                visible: tile.screen === null && tile.items.length === 0
                 text: tile.modelData.title || tile.modelData.prompt || tile.modelData.cwd || ""
                 width: parent.width - Theme.spacingL * 2
                 horizontalAlignment: Text.AlignHCenter

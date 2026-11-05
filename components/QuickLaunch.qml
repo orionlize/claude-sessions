@@ -7,11 +7,15 @@ import qs.Services
 import qs.Widgets
 import qs.DCommon.Widgets as D
 import "../lib/Folders.js" as Folders
+import "../lib/LaunchOptions.js" as LaunchOptions
 
 // Global quick-entry box, like Claude Desktop's: type a prompt, press Enter, and a new
-// Claude Code session starts in a new terminal. Like Desktop's new-session screen, a
+// Claude Code session starts silently in the claude-quick tmux session. Like Desktop's new-session screen, a
 // folder control under the prompt picks where it runs: recent folders, any typed
-// path, or a fresh temporary folder. It owns the keyboard while open.
+// path, or a fresh temporary folder. Model and effort chips beside it open a
+// dropdown on click (or Ctrl+M / Ctrl+E); the mouse wheel over a chip steps through
+// its choices without opening it.
+// It owns the keyboard while open.
 Scope {
     id: root
 
@@ -21,11 +25,18 @@ Scope {
     // "" starts in a new /tmp/<uuid> folder.
     property string folder: ""
     property var recentFolders: []
+    property string model: LaunchOptions.DEFAULT_MODEL
+    property string effort: LaunchOptions.DEFAULT_EFFORT
+    property var modelOptions: LaunchOptions.MODELS
 
     property bool picking: false
     property string folderQuery: ""
     property var completions: []
     property int folderIndex: 0
+    // "" when closed, else "model" or "effort".
+    property string optionMenu: ""
+    property int optionIndex: 0
+    readonly property var optionItems: optionMenu === "model" ? modelOptions : optionMenu === "effort" ? LaunchOptions.EFFORTS : []
     readonly property string home: Quickshell.env("HOME") || ""
     readonly property var folderItems: Folders.items(recentFolders, completions, folderQuery, home)
 
@@ -34,7 +45,7 @@ Scope {
     readonly property color surfaceColor: Theme.floatingWindowSurface
     readonly property bool darken: SettingsData.modalDarkenBackground
 
-    signal submitted(string prompt, string folder)
+    signal submitted(string prompt, string folder, string model, string effort)
 
     function tr(text) {
         return I18n.trFor("claudeSessions", text);
@@ -44,6 +55,7 @@ Scope {
         targetScreen = CompositorService.getFocusedScreen() ?? Quickshell.screens[0] ?? null;
         input.text = "";
         picking = false;
+        optionMenu = "";
         shown = true;
         Qt.callLater(() => input.forceActiveFocus());
     }
@@ -51,6 +63,7 @@ Scope {
     function close() {
         shown = false;
         picking = false;
+        optionMenu = "";
     }
 
     function folderLabel(path) {
@@ -61,6 +74,7 @@ Scope {
         folderField.text = "";
         folderQuery = "";
         completions = [];
+        optionMenu = "";
         folderIndex = Math.max(0, folderItems.findIndex(item => item.path === folder));
         picking = true;
         Qt.callLater(() => folderField.forceActiveFocus());
@@ -69,6 +83,50 @@ Scope {
     function closePicker() {
         picking = false;
         Qt.callLater(() => input.forceActiveFocus());
+    }
+
+    function cycleModel(delta) {
+        model = LaunchOptions.cycle(modelOptions, model, delta);
+    }
+
+    function cycleEffort(delta) {
+        effort = LaunchOptions.cycle(LaunchOptions.EFFORTS, effort, delta);
+    }
+
+    function openOptions(kind) {
+        picking = false;
+        optionMenu = kind;
+        optionIndex = Math.max(0, optionItems.indexOf(kind === "model" ? model : effort));
+        Qt.callLater(() => optionKeys.forceActiveFocus());
+    }
+
+    function toggleOptions(kind) {
+        if (optionMenu === kind)
+            closeOptions();
+        else
+            openOptions(kind);
+    }
+
+    function closeOptions() {
+        optionMenu = "";
+        Qt.callLater(() => input.forceActiveFocus());
+    }
+
+    function moveOption(delta) {
+        const count = optionItems.length;
+        if (count > 0)
+            optionIndex = (optionIndex + delta + count) % count;
+    }
+
+    function chooseOption(index) {
+        const value = optionItems[index];
+        if (value === undefined)
+            return;
+        if (optionMenu === "model")
+            model = value;
+        else if (optionMenu === "effort")
+            effort = value;
+        closeOptions();
     }
 
     function moveFolder(delta) {
@@ -141,7 +199,7 @@ Scope {
     function submit() {
         const prompt = input.text.trim();
         close();
-        submitted(prompt, folder);
+        submitted(prompt, folder, model, effort);
     }
 
     PanelWindow {
@@ -299,10 +357,15 @@ Scope {
 
                             Keys.onPressed: event => {
                                 const shift = event.modifiers & Qt.ShiftModifier;
+                                const ctrl = event.modifiers & Qt.ControlModifier;
                                 if (event.key === Qt.Key_Escape) {
                                     root.close();
                                 } else if (event.key === Qt.Key_Tab) {
                                     root.openPicker();
+                                } else if (ctrl && event.key === Qt.Key_M) {
+                                    root.openOptions("model");
+                                } else if (ctrl && event.key === Qt.Key_E) {
+                                    root.openOptions("effort");
                                 } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !shift) {
                                     root.submit();
                                 } else {
@@ -357,6 +420,8 @@ Scope {
 
                 // The row under the prompt, as on Desktop's new-session screen.
                 Item {
+                    id: optionBar
+
                     width: parent.width
                     height: folderChip.height
 
@@ -365,7 +430,7 @@ Scope {
 
                         readonly property bool active: root.picking || chipMouse.containsMouse
 
-                        width: Math.min(chipRow.implicitWidth + Theme.spacingS * 2, parent.width * 0.6)
+                        width: Math.min(chipRow.implicitWidth + Theme.spacingS * 2, parent.width * 0.45)
                         height: Theme.iconSize + Theme.spacingS
                         radius: Theme.cornerRadius
                         color: active ? Theme.surfaceHover : Theme.withAlpha(Theme.onSurface, 0.05)
@@ -386,7 +451,7 @@ Scope {
 
                             StyledText {
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: Math.min(implicitWidth, folderChip.parent.width * 0.6 - Theme.iconSizeSmall * 2 - Theme.spacingS * 3)
+                                width: Math.min(implicitWidth, folderChip.parent.width * 0.45 - Theme.iconSizeSmall * 2 - Theme.spacingS * 3)
                                 text: root.folderLabel(root.folder)
                                 font.pixelSize: Theme.fontSizeSmall
                                 color: Theme.onSurface
@@ -411,13 +476,42 @@ Scope {
                         }
                     }
 
-                    StyledText {
+                    Row {
+                        id: optionChips
+
                         anchors.left: folderChip.right
+                        anchors.leftMargin: Theme.spacingS
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Theme.spacingS
+
+                        OptionChip {
+                            id: modelChip
+
+                            icon: "neurology"
+                            text: root.model
+                            open: root.optionMenu === "model"
+                            onClicked: root.toggleOptions("model")
+                            onStep: delta => root.cycleModel(delta)
+                        }
+
+                        OptionChip {
+                            id: effortChip
+
+                            icon: "speed"
+                            text: root.effort
+                            open: root.optionMenu === "effort"
+                            onClicked: root.toggleOptions("effort")
+                            onStep: delta => root.cycleEffort(delta)
+                        }
+                    }
+
+                    StyledText {
+                        anchors.left: optionChips.right
                         anchors.leftMargin: Theme.spacingM
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         horizontalAlignment: Text.AlignRight
-                        text: root.picking ? root.tr("Enter to choose · Tab to complete · Esc to go back") : root.tr("Enter to start · Shift+Enter for a new line · Tab for folder")
+                        text: root.picking ? root.tr("Enter to choose · Tab to complete · Esc to go back") : root.optionMenu ? root.tr("↑↓ to move · Enter to choose · Esc to go back") : root.tr("Enter to start · Tab for folder · Ctrl+M model · Ctrl+E effort")
                         font.pixelSize: Theme.fontSizeSmall
                         color: Theme.withAlpha(Theme.surfaceVariantText, 0.7)
                         elide: Text.ElideRight
@@ -570,6 +664,199 @@ Scope {
                     }
                 }
             }
+
+            // Dropdown for the model / effort chip, opened right under it. It floats over the
+            // card (and past its bottom edge) instead of taking space in the column, so
+            // opening it never resizes the card.
+            Item {
+                id: optionKeys
+
+                readonly property var anchorChip: root.optionMenu === "effort" ? effortChip : modelChip
+
+                x: column.x
+                y: column.y + optionBar.y + optionBar.height + Theme.spacingXS
+                z: 1
+                width: column.width
+                height: optionPanel.height
+                visible: root.optionMenu !== ""
+
+                Keys.onPressed: event => {
+                    const ctrl = event.modifiers & Qt.ControlModifier;
+                    const shift = event.modifiers & Qt.ShiftModifier;
+                    const digit = event.key - Qt.Key_1;
+                    if (event.key === Qt.Key_Escape) {
+                        root.closeOptions();
+                    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                        root.chooseOption(root.optionIndex);
+                    } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Tab || (ctrl && (event.key === Qt.Key_N || event.key === Qt.Key_J))) {
+                        root.moveOption(1);
+                    } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Backtab || (ctrl && (event.key === Qt.Key_P || event.key === Qt.Key_K))) {
+                        root.moveOption(-1);
+                    } else if (ctrl && event.key === Qt.Key_M) {
+                        if (root.optionMenu === "model")
+                            root.moveOption(shift ? -1 : 1);
+                        else
+                            root.openOptions("model");
+                    } else if (ctrl && event.key === Qt.Key_E) {
+                        if (root.optionMenu === "effort")
+                            root.moveOption(shift ? -1 : 1);
+                        else
+                            root.openOptions("effort");
+                    } else if (!event.modifiers && digit >= 0 && digit < Math.min(9, root.optionItems.length)) {
+                        root.chooseOption(digit);
+                    } else {
+                        return;
+                    }
+                    event.accepted = true;
+                }
+
+                Rectangle {
+                    id: optionPanel
+
+                    width: Math.min(parent.width, Math.max(optionKeys.anchorChip.width, Theme.launcherWidthWide * 0.25))
+                    height: optionList.height + Theme.spacingXS * 2
+                    // Lines up with the chip that opened it, kept inside the card.
+                    x: Math.min(parent.width - width, optionChips.x + optionKeys.anchorChip.x)
+                    radius: Theme.cornerRadius
+                    color: Theme.chipSurface
+
+                    ElevationShadow {
+                        anchors.fill: parent
+                        z: -1
+                        level: Theme.elevationLevel2
+                        fallbackOffset: Theme.spacingXXS
+                        targetColor: Theme.chipSurface
+                        targetRadius: Theme.cornerRadius
+                        borderWidth: 0
+                        shadowEnabled: Theme.elevationEnabled && SettingsData.popoutElevationEnabled
+                    }
+
+                    // Past the card's edge, clicks would otherwise reach the backdrop and close.
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.AllButtons
+                    }
+
+                    ListView {
+                        id: optionList
+
+                        x: Theme.spacingXS
+                        y: Theme.spacingXS
+                        width: parent.width - Theme.spacingXS * 2
+                        height: Math.min(contentHeight, Theme.launcherMaxVisibleRows * (root.pillHeight * 0.8 + Theme.groupedListGap))
+                        clip: true
+                        spacing: Theme.groupedListGap
+                        boundsBehavior: Flickable.StopAtBounds
+                        model: root.optionItems
+                        currentIndex: root.optionIndex
+                        highlightFollowsCurrentItem: false
+                        onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+
+                        delegate: Rectangle {
+                            id: optionRow
+
+                            required property var modelData
+                            required property int index
+                            readonly property bool selected: index === root.optionIndex
+                            readonly property bool current: modelData === (root.optionMenu === "model" ? root.model : root.effort)
+                            readonly property color contentColor: selected ? Theme.onSelectedContainer : Theme.onSurface
+
+                            width: optionList.width
+                            height: Math.round(root.pillHeight * 0.8)
+                            radius: Theme.cornerRadius
+                            color: selected ? Theme.selectedContainer : optionRowMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+                            MouseArea {
+                                id: optionRowMouse
+
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onPositionChanged: root.optionIndex = optionRow.index
+                                onClicked: root.chooseOption(optionRow.index)
+                            }
+
+                            StyledText {
+                                x: Theme.spacingM
+                                anchors.right: optionCheck.left
+                                anchors.rightMargin: Theme.spacingS
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: optionRow.modelData
+                                color: optionRow.contentColor
+                                font.weight: optionRow.current ? Theme.fontWeightMedium : Font.Normal
+                                elide: Text.ElideRight
+                            }
+
+                            D.DIcon {
+                                id: optionCheck
+
+                                anchors.right: parent.right
+                                anchors.rightMargin: Theme.spacingM
+                                anchors.verticalCenter: parent.verticalCenter
+                                visible: optionRow.current
+                                name: "check"
+                                size: Theme.iconSizeSmall
+                                color: optionRow.contentColor
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Click opens the dropdown; the wheel steps through the choices in place.
+    component OptionChip: Rectangle {
+        id: chip
+
+        property string icon: ""
+        property string text: ""
+        property bool open: false
+        signal clicked
+        signal step(int delta)
+
+        width: optionRow.implicitWidth + Theme.spacingS * 2
+        height: Theme.iconSize + Theme.spacingS
+        radius: Theme.cornerRadius
+        color: open || optionMouse.containsMouse ? Theme.surfaceHover : Theme.withAlpha(Theme.onSurface, 0.05)
+
+        Row {
+            id: optionRow
+
+            x: Theme.spacingS
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spacingXS
+
+            D.DIcon {
+                anchors.verticalCenter: parent.verticalCenter
+                name: chip.icon
+                size: Theme.iconSizeSmall
+                color: Theme.surfaceVariantText
+            }
+
+            StyledText {
+                anchors.verticalCenter: parent.verticalCenter
+                text: chip.text
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.onSurface
+            }
+
+            D.DIcon {
+                anchors.verticalCenter: parent.verticalCenter
+                name: chip.open ? "expand_less" : "expand_more"
+                size: Theme.iconSizeSmall
+                color: Theme.surfaceVariantText
+            }
+        }
+
+        MouseArea {
+            id: optionMouse
+
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: chip.clicked()
+            onWheel: wheel => chip.step(wheel.angleDelta.y > 0 ? -1 : 1)
         }
     }
 }
