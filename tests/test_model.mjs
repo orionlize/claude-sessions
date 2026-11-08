@@ -191,3 +191,46 @@ test("focus command carries the tmux location", () => {
     assert.equal(argv[2], "/p/scripts/focus.py");
     assert.deepEqual(JSON.parse(argv[3]), { pid: 5, tmux: "/t,1,0", pane: "%2" });
 });
+
+test("a session nobody has used yet stays hidden", () => {
+    const visible = (...events) => M.sessionList(run(...events).state).length;
+    assert.equal(visible(ev("SessionStart", { source: "startup" })), 0);
+    assert.equal(visible(ev("SessionStart"), ev("Notification", { notification_type: "idle_prompt" })), 0);
+    assert.equal(visible(ev("SessionStart"), ev("UserPromptSubmit")), 1);
+    assert.equal(visible(ev("SessionStart", { source: "resume" })), 1);
+    assert.equal(visible(ev("SessionStart", { source: "clear" })), 1);
+    assert.equal(visible(ev("Stop")), 1);
+    assert.equal(Object.keys(run(ev("SessionStart")).state.sessions).length, 1);
+});
+
+test("restore hides unused sessions saved before pristine tracking", () => {
+    const restored = M.restore({
+        e: { id: "e", status: "idle", prompt: "", lastEventAt: 1 },
+        u: { id: "u", status: "idle", prompt: "hi", lastEventAt: 2 },
+    });
+    assert.deepEqual(plain(M.sessionList(restored).map(s => s.id)), ["u"]);
+});
+
+test("a dashboard reply lists only the background fork", () => {
+    const viewer = { session_id: "job", pid: 10 };
+    const fork = { session_id: "fork", pid: 30, forked_from: "job", ancestors: [30, 20, 10, 5] };
+    const { state } = run(
+        ev("SessionStart", { ...viewer, source: "resume" }),
+        ev("UserPromptSubmit", { ...viewer, prompt: "again" }),
+        ev("SessionStart", { ...fork, source: "resume" }),
+        ev("PreToolUse", { ...fork, tool_use_id: "a", tool_name: "Bash" }),
+    );
+    const list = plain(M.sessionList(state));
+    assert.deepEqual(list.map(s => s.id), ["fork"]);
+    assert.equal(list[0].prompt, "again");
+    // Opening the job again in its own process brings it back.
+    assert.equal(M.sessionList(M.apply(state, ev("SessionStart", { ...viewer, source: "resume" }), 9).state).length, 2);
+});
+
+test("a fork in another window keeps its parent listed", () => {
+    const { state } = run(
+        ev("UserPromptSubmit", { session_id: "job", pid: 10 }),
+        ev("UserPromptSubmit", { session_id: "fork", pid: 30, forked_from: "job", ancestors: [30, 20] }),
+    );
+    assert.equal(M.sessionList(state).length, 2);
+});

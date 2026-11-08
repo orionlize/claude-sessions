@@ -108,9 +108,19 @@ def tmux_title(tmux, pane):
     return clean_title(out) if out is not None else ""
 
 
+def is_background_job(pid):
+    """A job under Claude's daemon: the terminal above it is not the one showing it."""
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            return b"\0CLAUDE_CODE_SESSION_KIND=bg\0" in b"\0" + f.read()
+    except OSError:
+        return False
+
+
 def window_titles(sessions):
     """{id: title} for sessions outside tmux, from niri's window list."""
-    local = [s for s in sessions if not (s.get("tmux") and s.get("pane")) and alive(s.get("pid"))]
+    local = [s for s in sessions if not (s.get("tmux") and s.get("pane")) and alive(s.get("pid"))
+             and not is_background_job(s["pid"])]
     if not local:
         return {}
     out = run(["niri", "msg", "--json", "windows"])
