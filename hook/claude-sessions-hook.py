@@ -7,6 +7,7 @@ path exits 0 with no output, so Claude Code falls back to its terminal prompt.
 import hashlib
 import json
 import os
+import re
 import socket
 import sys
 import uuid
@@ -14,11 +15,23 @@ import uuid
 MAX_DETAIL = 6000
 MAX_ACTIVITY = 120
 PERSISTABLE_UPDATES = {"addRules", "addDirectories"}
+# A versioned install runs as e.g. ~/.local/share/claude/versions/2.1.319.
+VERSION_COMM = re.compile(r"^\d+(\.\d+)+$")
+MAX_ANCESTORS = 32
 
 
 def socket_path():
     runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     return os.path.join(runtime, "claude-sessions.sock")
+
+
+def parent_pid(pid):
+    with open(f"/proc/{pid}/stat") as f:
+        return int(f.read().rsplit(")", 1)[1].split()[1])
+
+
+def is_claude(comm):
+    return comm in ("claude", "node", "bun") or bool(VERSION_COMM.match(comm))
 
 
 def claude_pid():
@@ -27,16 +40,47 @@ def claude_pid():
     for _ in range(5):
         try:
             with open(f"/proc/{pid}/comm") as f:
-                comm = f.read().strip()
-            if comm in ("claude", "node", "bun"):
-                return pid
-            with open(f"/proc/{pid}/stat") as f:
-                pid = int(f.read().rsplit(")", 1)[1].split()[1])
+                if is_claude(f.read().strip()):
+                    return pid
+            pid = parent_pid(pid)
         except (OSError, ValueError, IndexError):
             break
         if pid <= 1:
             break
     return os.getppid()
+
+
+def ancestors(pid):
+    """pid and the processes above it, nearest first."""
+    chain = []
+    while pid > 1 and len(chain) < MAX_ANCESTORS:
+        chain.append(pid)
+        try:
+            pid = parent_pid(pid)
+        except (OSError, ValueError, IndexError):
+            break
+    return chain
+
+
+def forked_from(argv):
+    """Session id that `--fork-session --resume <id or transcript>` continues, or ""."""
+    if "--fork-session" not in argv:
+        return ""
+    for i, arg in enumerate(argv):
+        value = argv[i + 1] if arg in ("--resume", "-r") and i + 1 < len(argv) else (
+            arg.split("=", 1)[1] if arg.startswith("--resume=") else "")
+        if value:
+            name = os.path.basename(value)
+            return name[:-len(".jsonl")] if name.endswith(".jsonl") else name
+    return ""
+
+
+def cmdline(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        return []
 
 
 def clip(value, limit):
@@ -99,15 +143,22 @@ def build_event(data):
     name = data.get("hook_event_name", "")
     tool = data.get("tool_name", "")
     tool_input = data.get("tool_input")
+    pid = claude_pid()
     event = {
         "event": name,
         "session_id": data.get("session_id", ""),
         "cwd": data.get("cwd", ""),
         "transcript_path": data.get("transcript_path", ""),
-        "pid": claude_pid(),
+        "pid": pid,
         "permission_mode": data.get("permission_mode", ""),
         "is_subagent": bool(data.get("agent_id")),
     }
+    # Replying to a job in the dashboard: the dashboard's own process shows the job's
+    # session while a background child forks it and does the work.
+    parent = forked_from(cmdline(pid))
+    if parent and parent != event["session_id"]:
+        event["forked_from"] = parent
+        event["ancestors"] = ancestors(pid)
     # Lets the widget jump to the tmux pane that hosts this session.
     if os.environ.get("TMUX") and os.environ.get("TMUX_PANE"):
         event["tmux"] = os.environ["TMUX"]

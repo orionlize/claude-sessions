@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import json
 import os
@@ -222,6 +223,18 @@ class FakeRunner:
         self.spawned = session
 
 
+class JobRunner(FakeRunner):
+    def __init__(self, agents, windows):
+        super().__init__([], windows)
+        self.agent_list, self.attached = agents, None
+
+    def agents(self, claude, env):
+        return self.agent_list
+
+    def spawn_attach(self, claude, job, cwd, env):
+        self.attached = (claude, job, cwd, env)
+
+
 class Focus(unittest.TestCase):
     target = {"pid": 999999, "tmux": "/tmp/tmux-1/default,9,0", "pane": "%3"}
 
@@ -263,6 +276,81 @@ class Focus(unittest.TestCase):
     def test_reads_tmux_from_process_environment(self):
         with unittest.mock.patch.object(focus, "environ", lambda pid: {"TMUX": "/s,1,0", "TMUX_PANE": "%9"}):
             self.assertEqual(focus.tmux_location({"pid": 5}), ("/s", "%9"))
+
+    def test_forked_from_reads_resume_target(self):
+        self.assertEqual(hook.forked_from(["claude", "--fork-session", "--resume", "/p/abc.jsonl"]), "abc")
+        self.assertEqual(hook.forked_from(["claude", "--resume=abc", "--fork-session"]), "abc")
+        self.assertEqual(hook.forked_from(["claude", "--resume", "abc"]), "")
+        self.assertEqual(hook.forked_from([]), "")
+
+    def test_versioned_binary_counts_as_claude(self):
+        self.assertTrue(hook.is_claude("2.1.319"))
+        self.assertFalse(hook.is_claude("bash"))
+
+    def test_hook_ancestors_start_at_pid(self):
+        self.assertEqual(hook.ancestors(os.getpid())[:2], [os.getpid(), os.getppid()])
+
+    def test_job_of_matches_background_pid(self):
+        agents = [{"pid": 5, "id": "aaaa", "kind": "interactive"}, {"pid": 5, "id": "bbbb", "kind": "background"}]
+        self.assertEqual(focus.job_of(agents, 5)["id"], "bbbb")
+        self.assertIsNone(focus.job_of(agents, 6))
+
+    def test_attach_command_prefers_override_then_wrapper(self):
+        with tempfile.TemporaryDirectory() as bin_dir:
+            wrapper = os.path.join(bin_dir, "claude-hl")
+            pathlib.Path(wrapper).write_text("#!/bin/sh\n")
+            os.chmod(wrapper, 0o755)
+            self.assertEqual(focus.attach_command("/bin/claude", {"PATH": bin_dir}), wrapper)
+            self.assertEqual(focus.attach_command("/bin/claude", {"PATH": bin_dir, "CLAUDE_SESSIONS_CLAUDE": "my-claude"}), "my-claude")
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertEqual(focus.attach_command("/bin/claude", {"PATH": empty}), "/bin/claude")
+
+    def test_client_pids_skip_daemon_and_job_hosts(self):
+        procs = [(1, ["/bin/claude"]), (2, ["/bin/claude", "daemon", "run"]), (3, ["claude", "bg-pty-host"]),
+                 (4, ["claude", "attach", "x"]), (5, ["/v/2.1.319", "--session-id", "x"]), (6, [])]
+        self.assertEqual(focus.client_pids(procs), [1, 4])
+
+    def test_job_on_screen_in_agent_view_is_focused(self):
+        agents = [{"pid": 77, "id": "job1", "kind": "background", "name": "fix-things"}]
+        windows = [{"id": 3, "pid": 601, "title": "◐ other-job"}, {"id": 4, "pid": 701, "title": "◐ fix-things"}]
+        runner = JobRunner(agents, windows)
+        with self.job_env(procs=[(600, ["/bin/claude"]), (700, ["/bin/claude"])]):
+            self.assertEqual(focus.focus({"pid": 77}, runner), "focused")
+        self.assertEqual(runner.focused, 4)
+        self.assertIsNone(runner.attached)
+
+    def test_agent_view_on_another_job_gets_a_new_attach(self):
+        agents = [{"pid": 77, "id": "job1", "kind": "background", "name": "fix-things"}]
+        runner = JobRunner(agents, [{"id": 3, "pid": 601, "title": "◐ other-job"}])
+        with self.job_env(procs=[(600, ["/bin/claude"])]):
+            self.assertEqual(focus.focus({"pid": 77}, runner), "spawned")
+
+    def test_attach_pids_need_the_job_id(self):
+        procs = [(1, ["claude", "attach", "abc"]), (2, ["claude", "attach", "abcd"]), (3, ["claude", "attach"])]
+        self.assertEqual(focus.attach_pids("abc", procs), [1])
+
+    def test_background_job_opens_attach_terminal(self):
+        runner = JobRunner([{"pid": 77, "id": "job1", "kind": "background"}], [])
+        with self.job_env():
+            self.assertEqual(focus.focus({"pid": 77}, runner), "spawned")
+        self.assertEqual(runner.attached[:3], ("/bin/claude", "job1", "/w"))
+        self.assertEqual(runner.attached[3]["CLAUDE_CONFIG_DIR"], "/cfg")
+
+    def test_background_job_focuses_existing_attach(self):
+        runner = JobRunner([{"pid": 77, "id": "job1", "kind": "background"}], [{"id": 4, "pid": 501}])
+        with self.job_env(procs=[(500, ["claude", "attach", "job1"])]):
+            self.assertEqual(focus.focus({"pid": 77}, runner), "focused")
+        self.assertEqual(runner.focused, 4)
+        self.assertIsNone(runner.attached)
+
+    def job_env(self, procs=()):
+        env = {"CLAUDE_CODE_SESSION_KIND": "bg", "PWD": "/w", "CLAUDE_CONFIG_DIR": "/cfg"}
+        stack = contextlib.ExitStack()
+        stack.enter_context(unittest.mock.patch.object(focus, "environ", lambda pid: env))
+        stack.enter_context(unittest.mock.patch.object(focus, "claude_binary", lambda pid: "/bin/claude"))
+        stack.enter_context(unittest.mock.patch.object(focus, "processes", lambda: list(procs)))
+        stack.enter_context(unittest.mock.patch.object(focus, "ancestors", lambda pid: [pid, pid + 1]))
+        return stack
 
     def test_ancestors_of_self(self):
         self.assertEqual(focus.ancestors(os.getpid())[:2], [os.getpid(), os.getppid()])

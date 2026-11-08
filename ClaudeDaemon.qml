@@ -33,7 +33,7 @@ Item {
         return runtime ? runtime + "/claude-sessions.sock" : "";
     }
     readonly property bool hasSessions: Object.keys(model.sessions).length > 0
-    readonly property bool hasBusySessions: Object.values(model.sessions).some(s => s.status !== "idle")
+    readonly property bool hasBusySessions: Object.values(model.sessions).some(s => !s.pristine && s.status !== "idle")
 
     function pluginDir() {
         const plugin = pluginService?.availablePlugins?.[pluginId];
